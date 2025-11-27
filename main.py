@@ -7,46 +7,16 @@ import time
 from collections import defaultdict
 import logging
 import weakref
+from config import *  # Импортируем все настройки
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('DBD_QL')
 
 pygame.init()
-WIDTH, HEIGHT = 1280, 720
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Dead by Daylight Q-Learning - OPTIMIZED")
 clock = pygame.time.Clock()
-
-BACKGROUND = (10, 15, 20)
-SURVIVOR_COLOR = (30, 144, 255)
-HUNTER_COLOR = (220, 20, 60)
-GENERATOR_COLOR = (34, 139, 34)
-EXIT_COLOR = (255, 215, 0)
-WALL_COLOR = (80, 80, 100)
-TEXT_COLOR = (240, 240, 240)
-UI_BG = (50, 50, 50, 128)
-
-# Q-Learning параметры
-LEARNING_RATE = 0.2
-DISCOUNT = 0.95
-EPISODES = 10000
-EPSILON_DECAY = 0.9995
-MIN_EPSILON = 0.1
-
-# Параметры захвата
-CAPTURE_RADIUS = 40
-CAPTURE_HOLD_STEPS = 12
-
-# Ограничения памяти
-MAX_Q_TABLE_SIZE = 50000
-PRUNE_EVERY = 500
-SAVE_FILE = "dbd_q_learning_optimized.pkl"
-
-# Параметры для избежания ловушек
-STUCK_THRESHOLD = 20
-ESCAPE_BOOST = 0.3
-POSITION_MEMORY = 50
 
 
 class SmartQTable:
@@ -160,8 +130,8 @@ class Agent:
         self.x = x
         self.y = y
         self.color = color
-        self.speed = 2.8 if is_hunter else 3.0
-        self.radius = 14 if is_hunter else 11
+        self.speed = HUNTER_SPEED if is_hunter else SURVIVOR_SPEED
+        self.radius = HUNTER_RADIUS if is_hunter else SURVIVOR_RADIUS
         self.is_hunter = is_hunter
         self.agent_id = agent_id
 
@@ -176,8 +146,8 @@ class Agent:
 
         # Система зрения
         self.vision_direction = 0
-        self.vision_radius = 200 if is_hunter else 280
-        self.vision_angle = 120 if is_hunter else 150
+        self.vision_radius = HUNTER_VISION_RADIUS if is_hunter else SURVIVOR_VISION_RADIUS
+        self.vision_angle = HUNTER_VISION_ANGLE if is_hunter else SURVIVOR_VISION_ANGLE
         self.visible_generators = []
         self.visible_survivors = []
         self.visible_hunter = None
@@ -525,7 +495,7 @@ class Agent:
                 self.escape_mode = True
                 self.escape_steps = 0
                 reward -= 8  # Значительный штраф за застревание
-                logger.info(f"Агент {self.agent_id} застрял! Активирован режим побега")
+                #logger.info(f"Агент {self.agent_id} застрял! Активирован режим побега")
             else:
                 self.escape_steps += 1
                 if self.escape_steps > 30:
@@ -534,7 +504,7 @@ class Agent:
             if self.escape_mode:
                 self.escape_mode = False
                 reward += 15  # Награда за выход из ловушки
-                logger.info(f"Агент {self.agent_id} вышел из ловушки!")
+                #logger.info(f"Агент {self.agent_id} вышел из ловушки!")
             self.escape_steps = 0
 
         self.update_vision(agents, generators, [], walls)
@@ -659,9 +629,12 @@ class Agent:
         return removed
 
 
-# Вспомогательные функции (остаются в основном без изменений)
+# Вспомогательные функции
 
-def create_random_generators(count=3, min_distance=100, walls=[]):
+def create_random_generators(count=None, min_distance=100, walls=[]):
+    if count is None:
+        count = random.randint(NUM_GENERATORS[0], NUM_GENERATORS[1])
+
     generators = []
     attempts = 0
     max_attempts = 200
@@ -699,7 +672,10 @@ def create_random_generators(count=3, min_distance=100, walls=[]):
     return generators
 
 
-def create_random_exits(count=2, walls=[]):
+def create_random_exits(count=None, walls=[]):
+    if count is None:
+        count = random.randint(NUM_EXITS[0], NUM_EXITS[1])
+
     exits = []
     edge_positions = []
 
@@ -743,7 +719,10 @@ def create_random_exits(count=2, walls=[]):
     return exits
 
 
-def create_random_walls(count=4):
+def create_random_walls(count=None):
+    if count is None:
+        count = random.randint(NUM_WALLS[0], NUM_WALLS[1])
+
     walls = []
 
     for _ in range(count):
@@ -765,7 +744,9 @@ def create_agents(walls=[]):
     survivors = []
     positions = []
 
-    for i in range(random.randint(12, 20)):
+    num_survivors = random.randint(NUM_SURVIVORS[0], NUM_SURVIVORS[1])
+
+    for i in range(num_survivors):
         attempts = 0
         while attempts < 100:
             x = random.randint(100, WIDTH - 100)
@@ -786,17 +767,19 @@ def create_agents(walls=[]):
                 break
             attempts += 1
 
-    hunter_x, hunter_y = WIDTH // 2, HEIGHT // 2
-    for wall in walls:
-        closest_x = max(wall.rect.left, min(hunter_x, wall.rect.right))
-        closest_y = max(wall.rect.top, min(hunter_y, wall.rect.bottom))
-        distance_sq = (hunter_x - closest_x) ** 2 + (hunter_y - closest_y) ** 2
-        if distance_sq < 900:
-            hunter_x = random.randint(100, WIDTH - 100)
-            hunter_y = random.randint(100, HEIGHT - 100)
-            break
-    for i in range(random.randint(1, 2)):
+    hunter = None
+    if ENABLE_HUNTER:
+        hunter_x, hunter_y = WIDTH // 2, HEIGHT // 2
+        for wall in walls:
+            closest_x = max(wall.rect.left, min(hunter_x, wall.rect.right))
+            closest_y = max(wall.rect.top, min(hunter_y, wall.rect.bottom))
+            distance_sq = (hunter_x - closest_x) ** 2 + (hunter_y - closest_y) ** 2
+            if distance_sq < 900:
+                hunter_x = random.randint(100, WIDTH - 100)
+                hunter_y = random.randint(100, HEIGHT - 100)
+                break
         hunter = Agent(hunter_x, hunter_y, HUNTER_COLOR, True)
+
     return survivors, hunter
 
 
@@ -884,11 +867,10 @@ def create_transparent_surface(width, height, color):
     return surface
 
 
-def save_model(survivors, hunter, episode, successful_escapes, epsilon):
+def save_models(survivors, hunter, episode, successful_escapes, epsilon):
+    """Сохраняет модели выживших и охотника в разные файлы"""
     try:
-        temp_file = SAVE_FILE + ".tmp"
-
-        # Конвертируем SmartQTable в обычный dict для сохранения
+        # Сохраняем выживших
         survivors_data = []
         for agent in survivors:
             q_data = {}
@@ -896,83 +878,89 @@ def save_model(survivors, hunter, episode, successful_escapes, epsilon):
                 q_data[key] = value
             survivors_data.append(q_data)
 
-        hunter_data = {}
-        for key, value in hunter.q_table.items():
-            hunter_data[key] = value
-
-        data = {
+        data_survivors = {
             'survivors_q_tables': survivors_data,
-            'hunter_q_table': hunter_data,
             'episode': episode,
             'successful_escapes': successful_escapes,
             'epsilon': epsilon,
             'timestamp': time.time(),
-            'version': 2  # Версия для оптимизированного формата
+            'version': 2
         }
 
-        with open(temp_file, 'wb') as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(SURVIVORS_SAVE_FILE, 'wb') as f:
+            pickle.dump(data_survivors, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        if os.path.exists(SAVE_FILE):
-            os.remove(SAVE_FILE)
-        os.rename(temp_file, SAVE_FILE)
+        # Сохраняем охотника, если он есть
+        if hunter is not None:
+            hunter_data = {}
+            for key, value in hunter.q_table.items():
+                hunter_data[key] = value
 
-        file_size = os.path.getsize(SAVE_FILE) // 1024
-        logger.info(f"Сохранено! Эпизод: {episode}, Размер: {file_size}КБ")
+            data_hunter = {
+                'hunter_q_table': hunter_data,
+                'episode': episode,
+                'timestamp': time.time(),
+                'version': 2
+            }
+
+            with open(HUNTER_SAVE_FILE, 'wb') as f:
+                pickle.dump(data_hunter, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        file_size_survivors = os.path.getsize(SURVIVORS_SAVE_FILE) // 1024
+        file_size_hunter = os.path.getsize(HUNTER_SAVE_FILE) // 1024 if hunter is not None and os.path.exists(
+            HUNTER_SAVE_FILE) else 0
+
+        logger.info(f"Сохранено! Эпизод: {episode}, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
 
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
 
 
-def load_model(survivors, hunter):
-    if not os.path.exists(SAVE_FILE):
-        return 0, 0, 1.0
+def load_models(survivors, hunter):
+    """Загружает модели выживших и охотника из разных файлов"""
+    loaded_episode = 0
+    loaded_escapes = 0
+    loaded_epsilon = 1.0
 
-    file_size = os.path.getsize(SAVE_FILE)
-    if file_size == 0:
-        logger.warning("Файл сохранения пуст")
-        return 0, 0, 1.0
+    # Загружаем выживших
+    if os.path.exists(SURVIVORS_SAVE_FILE):
+        try:
+            with open(SURVIVORS_SAVE_FILE, 'rb') as f:
+                data = pickle.load(f)
 
-    try:
-        logger.info(f"Загрузка файла {file_size // 1024}КБ...")
+            if data.get('version', 1) >= 2:
+                for i, agent in enumerate(survivors):
+                    if i < len(data['survivors_q_tables']):
+                        agent.q_table.clear()
+                        agent.q_table.update(data['survivors_q_tables'][i])
 
-        with open(SAVE_FILE, 'rb') as f:
-            data = pickle.load(f)
+                loaded_episode = data['episode']
+                loaded_escapes = data['successful_escapes']
+                loaded_epsilon = data['epsilon']
+                logger.info(f"Загружены выжившие! Эпизод: {loaded_episode}, ε: {loaded_epsilon:.3f}")
+            else:
+                logger.warning("Старая версия формата выживших, требуется переобучение")
 
-        # Проверяем версию формата
-        if data.get('version', 1) < 2:
-            logger.warning("Старая версия формата, требуется переобучение")
-            return 0, 0, 1.0
+        except Exception as e:
+            logger.error(f"Ошибка загрузки выживших: {e}")
 
-        required_keys = ['survivors_q_tables', 'hunter_q_table', 'episode', 'successful_escapes', 'epsilon']
-        if not all(key in data for key in required_keys):
-            logger.error("Неверный формат файла сохранения")
-            return 0, 0, 1.0
+    # Загружаем охотника, если он есть и файл существует
+    if hunter is not None and os.path.exists(HUNTER_SAVE_FILE):
+        try:
+            with open(HUNTER_SAVE_FILE, 'rb') as f:
+                data = pickle.load(f)
 
-        loaded_episode = data['episode']
-        loaded_escapes = data['successful_escapes']
-        loaded_epsilon = data['epsilon']
+            if data.get('version', 1) >= 2:
+                hunter.q_table.clear()
+                hunter.q_table.update(data['hunter_q_table'])
+                logger.info("Загружен охотник!")
+            else:
+                logger.warning("Старая версия формата охотника, требуется переобучение")
 
-        # Загружаем данные в SmartQTable
-        for i, agent in enumerate(survivors):
-            if i < len(data['survivors_q_tables']):
-                agent.q_table.clear()
-                agent.q_table.update(data['survivors_q_tables'][i])
+        except Exception as e:
+            logger.error(f"Ошибка загрузки охотника: {e}")
 
-        hunter.q_table.clear()
-        hunter.q_table.update(data['hunter_q_table'])
-
-        logger.info(f"Загружено! Эпизод: {loaded_episode}, ε: {loaded_epsilon:.3f}")
-        return loaded_episode, loaded_escapes, loaded_epsilon
-
-    except (EOFError, pickle.UnpicklingError) as e:
-        logger.error(f"Файл поврежден: {e}")
-        return 0, 0, 1.0
-    except Exception as e:
-        logger.error(f"Ошибка загрузки: {e}")
-        return 0, 0, 1.0
+    return loaded_episode, loaded_escapes, loaded_epsilon
 
 
 def reset_episode(survivors, hunter, walls):
@@ -1011,50 +999,51 @@ def reset_episode(survivors, hunter, walls):
                 break
             attempts += 1
 
-    hunter_x, hunter_y = WIDTH // 2, HEIGHT // 2
-    for wall in walls:
-        closest_x = max(wall.rect.left, min(hunter_x, wall.rect.right))
-        closest_y = max(wall.rect.top, min(hunter_y, wall.rect.bottom))
-        distance_sq = (hunter_x - closest_x) ** 2 + (hunter_y - closest_y) ** 2
-        if distance_sq < 900:
-            hunter_x = random.randint(100, WIDTH - 100)
-            hunter_y = random.randint(100, HEIGHT - 100)
-            break
+    if hunter is not None:
+        hunter_x, hunter_y = WIDTH // 2, HEIGHT // 2
+        for wall in walls:
+            closest_x = max(wall.rect.left, min(hunter_x, wall.rect.right))
+            closest_y = max(wall.rect.top, min(hunter_y, wall.rect.bottom))
+            distance_sq = (hunter_x - closest_x) ** 2 + (hunter_y - closest_y) ** 2
+            if distance_sq < 900:
+                hunter_x = random.randint(100, WIDTH - 100)
+                hunter_y = random.randint(100, HEIGHT - 100)
+                break
 
-    hunter.x = hunter_x
-    hunter.y = hunter_y
-    hunter.caught = False
-    hunter.escaped = False
-    hunter.cooldown = 0
-    hunter.capture_target = None
-    hunter.hold_steps = 0
-    hunter.last_distance_to_target = float('inf')
-    # Сбрасываем систему обнаружения застревания для охотника
-    hunter.position_history = []
-    hunter.stuck_counter = 0
-    hunter.consecutive_wall_hits = 0
-    hunter.escape_mode = False
-    hunter.escape_steps = 0
-    hunter.movement_pattern = []
+        hunter.x = hunter_x
+        hunter.y = hunter_y
+        hunter.caught = False
+        hunter.escaped = False
+        hunter.cooldown = 0
+        hunter.capture_target = None
+        hunter.hold_steps = 0
+        hunter.last_distance_to_target = float('inf')
+        # Сбрасываем систему обнаружения застревания для охотника
+        hunter.position_history = []
+        hunter.stuck_counter = 0
+        hunter.consecutive_wall_hits = 0
+        hunter.escape_mode = False
+        hunter.escape_steps = 0
+        hunter.movement_pattern = []
 
-    return create_random_generators(3, 150, walls)
+    return create_random_generators(None, 150, walls)
 
 
 # Инициализация игры
 logger.info("Инициализация игры...")
-walls = create_random_walls(random.randint(60, 100))
-exits = create_random_exits(random.randint(2, 4), walls)
+walls = create_random_walls()
+exits = create_random_exits(None, walls)  # Исправлено: передаем count=None и walls
 survivors, hunter = create_agents(walls)
-generators = create_random_generators(random.randint(3, 5), 150, walls)
+generators = create_random_generators(None, 150, walls)
 
 font = pygame.font.SysFont('arial', 20)
 title_font = pygame.font.SysFont('arial', 24, bold=True)
 
-episode, successful_escapes, epsilon = load_model(survivors, hunter)
+episode, successful_escapes, epsilon = load_models(survivors, hunter)
 
 running = True
 paused = False
-simulation_speed = 1.0
+simulation_speed = DEFAULT_SIMULATION_SPEED
 show_vision_cones = True
 
 logger.info(f"Начало обучения с эпизода {episode}")
@@ -1068,9 +1057,9 @@ while running and episode < EPISODES:
                 paused = not paused
                 logger.info("Пауза" if paused else "Продолжение")
             elif event.key == pygame.K_s:
-                save_model(survivors, hunter, episode, successful_escapes, epsilon)
+                save_models(survivors, hunter, episode, successful_escapes, epsilon)
             elif event.key == pygame.K_l:
-                episode, successful_escapes, epsilon = load_model(survivors, hunter)
+                episode, successful_escapes, epsilon = load_models(survivors, hunter)
             elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
                 simulation_speed = min(simulation_speed * 2, 10000)
                 logger.info(f"Скорость симуляции: {simulation_speed:.0f}x")
@@ -1089,19 +1078,24 @@ while running and episode < EPISODES:
 
         steps = max(1, int(simulation_speed))
         for _ in range(steps):
-            for agent in survivors + [hunter]:
+            # Создаем список всех активных агентов
+            all_agents = survivors
+            if hunter is not None:
+                all_agents = survivors + [hunter]
+
+            for agent in all_agents:
                 if agent.caught or agent.escaped:
                     continue
-                agent.update_vision(survivors + [hunter], generators, exits, walls)
+                agent.update_vision(all_agents, generators, exits, walls)
 
-            for agent in survivors + [hunter]:
+            for agent in all_agents:
                 if agent.caught or agent.escaped:
                     continue
 
-                state = agent.get_optimized_state(survivors + [hunter], generators, exits, generators_fixed)
+                state = agent.get_optimized_state(all_agents, generators, exits, generators_fixed)
                 action = agent.choose_action(state, epsilon)
-                reward = agent.smooth_move(action, survivors + [hunter], generators, walls)
-                next_state = agent.get_optimized_state(survivors + [hunter], generators, exits, generators_fixed)
+                reward = agent.smooth_move(action, all_agents, generators, walls)
+                next_state = agent.get_optimized_state(all_agents, generators, exits, generators_fixed)
                 agent.update_q_value(state, action, reward, next_state)
 
                 if not agent.is_hunter and generators_fixed == len(generators):
@@ -1118,18 +1112,20 @@ while running and episode < EPISODES:
                 if episode % PRUNE_EVERY == 0 and episode > 0:
                     logger.info("Очистка Q-table...")
                     total_pruned = 0
-                    for agent in survivors + [hunter]:
+                    for agent in all_agents:
                         total_pruned += agent.prune_q_table()
                     logger.info(f"Всего удалено состояний: {total_pruned}")
 
                 if episode % 50 == 0:
-                    save_model(survivors, hunter, episode, successful_escapes, epsilon)
+                    save_models(survivors, hunter, episode, successful_escapes, epsilon)
                     avg_reward = np.mean(survivors[0].last_rewards) if survivors and survivors[0].last_rewards else 0
-                    hunter_avg = np.mean(hunter.last_rewards) if hunter.last_rewards else 0
+                    hunter_avg = np.mean(hunter.last_rewards) if hunter is not None and hunter.last_rewards else 0
 
                     # Статистика по застреваниям
                     stuck_count = sum(1 for a in survivors if a.escape_mode)
-                    q_table_sizes = [len(a.q_table) for a in survivors] + [len(hunter.q_table)]
+                    q_table_sizes = [len(a.q_table) for a in survivors]
+                    if hunter is not None:
+                        q_table_sizes.append(len(hunter.q_table))
 
                     logger.info(
                         f"Эпизод {episode}, ε={epsilon:.3f}, Побед: {successful_escapes}, "
@@ -1156,13 +1152,16 @@ while running and episode < EPISODES:
         generator.draw(screen)
 
     if show_vision_cones:
-        for agent in survivors + [hunter]:
+        for agent in survivors:
             if not agent.caught and not agent.escaped:
                 agent.draw_vision_cone(screen)
+        if hunter is not None and not hunter.caught and not hunter.escaped:
+            hunter.draw_vision_cone(screen)
 
     for agent in survivors:
         draw_agent(screen, agent)
-    draw_agent(screen, hunter)
+    if hunter is not None:
+        draw_agent(screen, hunter)
 
     # UI
     ui_left = create_transparent_surface(400, 280, UI_BG)
@@ -1177,15 +1176,16 @@ while running and episode < EPISODES:
         speed_display = f"1/{1 / simulation_speed:.0f}x"
 
     avg_reward = np.mean(survivors[0].last_rewards) if survivors and survivors[0].last_rewards else 0
-    hunter_avg = np.mean(hunter.last_rewards) if hunter.last_rewards else 0
+    hunter_avg = np.mean(hunter.last_rewards) if hunter is not None and hunter.last_rewards else 0
 
     stats = [
         f"Q-Learning - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ",
         f"Эпизод: {episode}/{EPISODES}",
         f"Побеги: {successful_escapes}",
         f"Генераторы: {generators_fixed}/{len(generators)}",
-        f"Активные: {active_survivors}/4",
+        f"Активные: {active_survivors}/{len(survivors)}",
         f"Застрявшие: {stuck_survivors}",
+        f"Охотник: {'вкл' if hunter is not None else 'выкл'}",
         f"ε: {epsilon:.3f}",
         f"Скорость: {speed_display}",
         f"Награда выжившего: {avg_reward:.2f}",
@@ -1231,8 +1231,8 @@ while running and episode < EPISODES:
         screen.blit(speed_text, (WIDTH // 2 - speed_text.get_width() // 2, 20))
 
     pygame.display.flip()
-    clock.tick(60)
+    clock.tick(FPS)
 
 logger.info("Завершение обучения...")
-save_model(survivors, hunter, episode, successful_escapes, epsilon)
+save_models(survivors, hunter, episode, successful_escapes, epsilon)
 pygame.quit()
