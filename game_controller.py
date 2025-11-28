@@ -143,7 +143,7 @@ class GameController:
                 HUNTER_SAVE_FILE) else 0
 
             logger.info(
-                f"Сохранено! Эпизод: {self.episode}, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
+                f"Сохранено! Эпизод: {self.episode}, Побеги: {self.successful_escapes}, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
 
         except Exception as e:
             logger.error(f"Ошибка сохранения: {e}")
@@ -169,7 +169,8 @@ class GameController:
                     loaded_episode = data['episode']
                     loaded_escapes = data['successful_escapes']
                     loaded_epsilon = data['epsilon']
-                    logger.info(f"Загружены выжившие! Эпизод: {loaded_episode}, ε: {loaded_epsilon:.3f}")
+                    logger.info(
+                        f"Загружены выжившие! Эпизод: {loaded_episode}, Побеги: {loaded_escapes}, ε: {loaded_epsilon:.3f}")
                 else:
                     logger.warning("Старая версия формата выживших, требуется переобучение")
 
@@ -196,6 +197,11 @@ class GameController:
 
     async def reset_episode_async(self):
         """Сброс эпизода"""
+        # Сначала подсчитываем, сколько выживших сбежало в этом эпизоде
+        escaped_this_episode = sum(1 for s in self.survivors if s.escaped)
+        if escaped_this_episode > 0:
+            logger.info(f"В эпизоде {self.episode} сбежало: {escaped_this_episode} выживших")
+
         for survivor in self.survivors:
             attempts = 0
             while attempts < 50:
@@ -294,13 +300,14 @@ class GameController:
         next_state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed)
         agent.update_q_value(state, action, reward, next_state)
 
-        # Проверка побега
-        if not agent.is_hunter and generators_fixed == len(self.generators):
+        # Проверка побега - только если агент еще не сбежал
+        if not agent.is_hunter and not agent.escaped and generators_fixed == len(self.generators):
             for exit_pos in self.exits:
-                if (exit_pos[0] - agent.x) ** 2 + (exit_pos[1] - agent.y) ** 2 < 1225:
+                if (exit_pos[0] - agent.x) ** 2 + (exit_pos[1] - agent.y) ** 2 < 1225:  # 35^2 = 1225
                     agent.escaped = True
                     self.successful_escapes += 1
-                    logger.info(f"Выживший {agent.agent_id} сбежал!")
+                    logger.info(f"Выживший {agent.agent_id} сбежал! Всего побегов: {self.successful_escapes}")
+                    break  # Выходим из цикла после первого подходящего выхода
 
     async def handle_events(self):
         """Асинхронная обработка событий"""
@@ -381,6 +388,8 @@ class GameController:
 
         active_survivors = sum(1 for s in self.survivors if not s.caught and not s.escaped)
         stuck_survivors = sum(1 for s in self.survivors if s.escape_mode)
+        escaped_survivors = sum(1 for s in self.survivors if s.escaped)
+        caught_survivors = sum(1 for s in self.survivors if s.caught)
 
         if self.simulation_speed >= 1:
             speed_display = f"{self.simulation_speed:.0f}x"
@@ -393,9 +402,11 @@ class GameController:
         stats = [
             f"Q-Learning - ASYNC OPTIMIZED",
             f"Эпизод: {self.episode}/{EPISODES}",
-            f"Побеги: {self.successful_escapes}",
+            f"Всего побегов: {self.successful_escapes}",
             f"Генераторы: {self.get_generators_fixed()}/{len(self.generators)}",
             f"Активные: {active_survivors}/{len(self.survivors)}",
+            f"Сбежали: {escaped_survivors}",
+            f"Пойманы: {caught_survivors}",
             f"Застрявшие: {stuck_survivors}",
             f"Охотник: {'вкл' if self.hunter is not None else 'выкл'}",
             f"ε: {self.epsilon:.3f}",
@@ -407,8 +418,15 @@ class GameController:
 
         for i, text in enumerate(stats):
             text_color = TEXT_COLOR
-            if i == 5 and stuck_survivors > 0:
-                text_color = (255, 100, 100)
+            if i == 2:  # Подсвечиваем строку с общим количеством побегов
+                text_color = (0, 255, 0) if self.successful_escapes > 0 else TEXT_COLOR
+            elif i == 5:  # Подсвечиваем строку с сбежавшими в текущем эпизоде
+                text_color = (0, 200, 0) if escaped_survivors > 0 else TEXT_COLOR
+            elif i == 6:  # Подсвечиваем строку с пойманными
+                text_color = (255, 100, 100) if caught_survivors > 0 else TEXT_COLOR
+            elif i == 7:  # Подсвечиваем строку с застрявшими
+                text_color = (255, 100, 100) if stuck_survivors > 0 else TEXT_COLOR
+
             text_surface = self.font.render(text, True, text_color)
             self.screen.blit(text_surface, (20, 15 + i * 25))
 
@@ -454,7 +472,7 @@ class GameController:
         self.initialize()
         self.episode, self.successful_escapes, self.epsilon = await self.load_models_async()
 
-        logger.info(f"Начало обучения с эпизода {self.episode}")
+        logger.info(f"Начало обучения с эпизода {self.episode}, предыдущих побед: {self.successful_escapes}")
 
         while self.running and self.episode < EPISODES:
             await self.handle_events()  # Теперь асинхронный вызов
@@ -493,12 +511,15 @@ class GameController:
                             hunter_avg = np.mean(
                                 self.hunter.last_rewards) if self.hunter is not None and self.hunter.last_rewards else 0
                             stuck_count = sum(1 for a in self.survivors if a.escape_mode)
+                            escaped_count = sum(1 for a in self.survivors if a.escaped)
+                            caught_count = sum(1 for a in self.survivors if a.caught)
                             q_table_sizes = [len(a.q_table) for a in self.survivors]
                             if self.hunter is not None:
                                 q_table_sizes.append(len(self.hunter.q_table))
 
                             logger.info(
-                                f"Эпизод {self.episode}, ε={self.epsilon:.3f}, Побед: {self.successful_escapes}, "
+                                f"Эпизод {self.episode}, ε={self.epsilon:.3f}, Всего побед: {self.successful_escapes}, "
+                                f"Сбежали: {escaped_count}, Пойманы: {caught_count}, "
                                 f"Застрявших: {stuck_count}, Q-table размеры: {q_table_sizes}")
 
                         await self.reset_episode_async()
