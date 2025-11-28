@@ -1,6 +1,8 @@
 !!!WARNING!!!!!!WARNING!!!!!!WARNING!!!!!!WARNING!!!
     All in this shit is a vibecode-trash, sorry.
 !!!WARNING!!!!!!WARNING!!!!!!WARNING!!!!!!WARNING!!!
+
+
 🎮 Основные объекты в игре:
 👥 Агенты:
 Выжившие (Survivors) - 3-4 штуки, синие кружки
