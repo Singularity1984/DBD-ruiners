@@ -14,7 +14,7 @@ LEARNING_RATE = 0.2
 DISCOUNT = 0.95
 EPISODES = 100000
 EPSILON_DECAY = 0.9995
-MIN_EPSILON = 0.1
+MIN_EPSILON = 0.001
 
 # Capture parameters
 CAPTURE_RADIUS = 40
@@ -54,3 +54,7 @@ NUM_WALLS = (60, 100)
 ENABLE_HUNTER = False  # Set to False to disable hunter
 DEFAULT_SIMULATION_SPEED = 1.0
 FPS = 15
+
+# Async settings
+ASYNC_BATCH_SIZE = 5  # Количество агентов для параллельного обновления
+ASYNC_SLEEP_TIME = 0.001  # Время сна между батчами для предотвращения блокировки
