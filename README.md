@@ -3,3 +3,5 @@
     All in this shit is a vibecode-trash, sorry.
     
 !!!WARNING!!!!!!WARNING!!!!!!WARNING!!!!!!WARNING!!!
+    ```pip install -r requirements.txt```
+    ```python main.py```
