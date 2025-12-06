@@ -9,24 +9,12 @@ WALL_COLOR = (80, 80, 100)
 TEXT_COLOR = (240, 240, 240)
 UI_BG = (50, 50, 50, 128)
 
-# Q-Learning parameters
-LEARNING_RATE = 0.2
-DISCOUNT = 0.95
+# DQN parameters (управляются внутри DQNAgent)
 EPISODES = 100000
-EPSILON_DECAY = 0.9995
-MIN_EPSILON = 0.001
 
 # Capture parameters
 CAPTURE_RADIUS = 40
 CAPTURE_HOLD_STEPS = 12
-
-# Memory limits
-MAX_Q_TABLE_SIZE = 50000
-PRUNE_EVERY = 500
-
-# Сохранение в разные файлы
-SURVIVORS_SAVE_FILE = "dbd_survivors.pkl"
-HUNTER_SAVE_FILE = "dbd_hunter.pkl"
 
 # Stuck avoidance
 STUCK_THRESHOLD = 20
@@ -44,14 +32,13 @@ SURVIVOR_VISION_ANGLE = 150
 HUNTER_VISION_ANGLE = 120
 
 # Generation parameters
-NUM_SURVIVORS = (1, 1)  # random between min and max
+NUM_SURVIVORS = (4, 4)  # 4 убегающих агента
 NUM_HUNTERS = 1
-NUM_GENERATORS = (3, 5)
-NUM_EXITS = (2, 4)
-NUM_WALLS = (60, 100)
+NUM_GENERATORS = (5, 5)  # Всегда 5 генераторов
+NUM_EXITS = (2, 2)  # Всегда 2 выхода
 
 # Simulation settings
-ENABLE_HUNTER = False  # Set to False to disable hunter
+ENABLE_HUNTER = True  # 1 догоняющий агент
 DEFAULT_SIMULATION_SPEED = 1.0
 FPS = 15
 
