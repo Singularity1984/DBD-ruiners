@@ -41,6 +41,7 @@ class EnvironmentGenerator:
 
     @staticmethod
     def create_random_walls(count=None):
+        """Создание случайных стен (старый метод, используется как fallback)"""
         if count is None:
             count = random.randint(NUM_WALLS[0], NUM_WALLS[1])
 
@@ -60,7 +61,29 @@ class EnvironmentGenerator:
         return walls
 
     @staticmethod
+    def create_perlin_map(num_generators=5):
+        """Создание карты через шум Перлина"""
+        try:
+            from perlin_map_generator import PerlinMapGenerator
+            generator = PerlinMapGenerator()
+            walls, generators = generator.generate_map(WIDTH, HEIGHT, num_generators)
+            print(f"Создано стен: {len(walls)}, генераторов: {len(generators)}")
+            # Если стен слишком мало, добавляем случайные
+            if len(walls) < 10:
+                print("Стен слишком мало, добавляем случайные стены")
+                additional_walls = EnvironmentGenerator.create_random_walls(20)
+                walls.extend(additional_walls)
+            return walls, generators
+        except Exception as e:
+            # Fallback если что-то пошло не так
+            print(f"Ошибка генерации карты через Перлин: {e}, используется случайная генерация")
+            walls = EnvironmentGenerator.create_random_walls()
+            generators = EnvironmentGenerator.create_random_generators(num_generators, walls=walls)
+            return walls, generators
+
+    @staticmethod
     def create_random_generators(count=None, min_distance=100, walls=[]):
+        """Создание случайных генераторов (старый метод, используется как fallback)"""
         if count is None:
             count = random.randint(NUM_GENERATORS[0], NUM_GENERATORS[1])
 
