@@ -31,7 +31,6 @@ class GameController:
 
         self.episode = 0
         self.successful_escapes = 0
-        self.epsilon = 1.0
 
         self.running = True
         self.paused = False
@@ -42,17 +41,16 @@ class GameController:
         """Инициализация игры"""
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Dead by Daylight Q-Learning - ASYNC OPTIMIZED")
+        pygame.display.set_caption("Dead by Daylight DQN - Deep Reinforcement Learning")
         self.clock = pygame.time.Clock()
 
         self.font = pygame.font.SysFont('arial', 20)
         self.title_font = pygame.font.SysFont('arial', 24, bold=True)
 
-        # Создание игрового мира
-        self.walls = EnvironmentGenerator.create_random_walls()
-        self.exits = EnvironmentGenerator.create_random_exits(None, self.walls)
+        # Создание игрового мира через шум Перлина
+        self.walls, self.generators = EnvironmentGenerator.create_perlin_map(5)
+        self.exits = EnvironmentGenerator.create_random_exits(2, self.walls)
         self.survivors, self.hunter = self._create_agents(self.walls)
-        self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
 
         logger.info("Игра инициализирована")
 
@@ -60,7 +58,7 @@ class GameController:
         """Создание агентов"""
         survivors = []
         positions = []
-        num_survivors = random.randint(NUM_SURVIVORS[0], NUM_SURVIVORS[1])
+        num_survivors = NUM_SURVIVORS[0]  # Всегда 4 выживших
 
         for i in range(num_survivors):
             attempts = 0
@@ -99,97 +97,70 @@ class GameController:
         return survivors, hunter
 
     async def save_models_async(self):
-        """Асинхронное сохранение моделей"""
+        """Асинхронное сохранение моделей DQN"""
         try:
             # Сохраняем выживших
-            survivors_data = []
-            for agent in self.survivors:
-                q_data = {}
-                for key, value in agent.q_table.items():
-                    q_data[key] = value
-                survivors_data.append(q_data)
-
-            data_survivors = {
-                'survivors_q_tables': survivors_data,
-                'episode': self.episode,
-                'successful_escapes': self.successful_escapes,
-                'epsilon': self.epsilon,
-                'timestamp': time.time(),
-                'version': 2
-            }
-
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: pickle.dump(data_survivors, open(SURVIVORS_SAVE_FILE, 'wb'),
-                                                                 protocol=pickle.HIGHEST_PROTOCOL))
+            for i, agent in enumerate(self.survivors):
+                filepath = f"survivor_{i}_dqn.pth"
+                await loop.run_in_executor(None, agent.dqn_agent.save, filepath)
 
             # Сохраняем охотника
             if self.hunter is not None:
-                hunter_data = {}
-                for key, value in self.hunter.q_table.items():
-                    hunter_data[key] = value
+                await loop.run_in_executor(None, self.hunter.dqn_agent.save, "hunter_dqn.pth")
 
-                data_hunter = {
-                    'hunter_q_table': hunter_data,
-                    'episode': self.episode,
-                    'timestamp': time.time(),
-                    'version': 2
-                }
-
-                await loop.run_in_executor(None, lambda: pickle.dump(data_hunter, open(HUNTER_SAVE_FILE, 'wb'),
-                                                                     protocol=pickle.HIGHEST_PROTOCOL))
-
-            file_size_survivors = os.path.getsize(SURVIVORS_SAVE_FILE) // 1024
-            file_size_hunter = os.path.getsize(HUNTER_SAVE_FILE) // 1024 if self.hunter is not None and os.path.exists(
-                HUNTER_SAVE_FILE) else 0
+            # Сохраняем метаданные
+            epsilon_avg = np.mean([a.dqn_agent.epsilon for a in self.survivors]) if self.survivors else 0.0
+            metadata = {
+                'episode': self.episode,
+                'successful_escapes': self.successful_escapes,
+                'epsilon': epsilon_avg,
+                'timestamp': time.time(),
+                'version': 3
+            }
+            await loop.run_in_executor(None, lambda: pickle.dump(metadata, open("dqn_metadata.pkl", 'wb'),
+                                                                 protocol=pickle.HIGHEST_PROTOCOL))
 
             logger.info(
-                f"Сохранено! Эпизод: {self.episode}, Побеги: {self.successful_escapes}, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
+                f"Сохранено! Эпизод: {self.episode}, Побеги: {self.successful_escapes}")
 
         except Exception as e:
             logger.error(f"Ошибка сохранения: {e}")
 
     async def load_models_async(self):
-        """Асинхронная загрузка моделей"""
+        """Асинхронная загрузка моделей DQN"""
         loaded_episode = 0
         loaded_escapes = 0
         loaded_epsilon = 1.0
 
-        # Загружаем выживших
-        if os.path.exists(SURVIVORS_SAVE_FILE):
+        # Загружаем метаданные
+        if os.path.exists("dqn_metadata.pkl"):
             try:
                 loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: pickle.load(open(SURVIVORS_SAVE_FILE, 'rb')))
-
-                if data.get('version', 1) >= 2:
-                    for i, agent in enumerate(self.survivors):
-                        if i < len(data['survivors_q_tables']):
-                            agent.q_table.clear()
-                            agent.q_table.update(data['survivors_q_tables'][i])
-
-                    loaded_episode = data['episode']
-                    loaded_escapes = data['successful_escapes']
-                    loaded_epsilon = data['epsilon']
-                    logger.info(
-                        f"Загружены выжившие! Эпизод: {loaded_episode}, Побеги: {loaded_escapes}, ε: {loaded_epsilon:.3f}")
-                else:
-                    logger.warning("Старая версия формата выживших, требуется переобучение")
-
+                metadata = await loop.run_in_executor(None, lambda: pickle.load(open("dqn_metadata.pkl", 'rb')))
+                if metadata.get('version', 1) >= 3:
+                    loaded_episode = metadata.get('episode', 0)
+                    loaded_escapes = metadata.get('successful_escapes', 0)
+                    loaded_epsilon = metadata.get('epsilon', 1.0)
             except Exception as e:
-                logger.error(f"Ошибка загрузки выживших: {e}")
+                logger.error(f"Ошибка загрузки метаданных: {e}")
+
+        # Загружаем выживших
+        loop = asyncio.get_event_loop()
+        for i, agent in enumerate(self.survivors):
+            filepath = f"survivor_{i}_dqn.pth"
+            if os.path.exists(filepath):
+                try:
+                    await loop.run_in_executor(None, agent.dqn_agent.load, filepath)
+                    logger.info(f"Загружен выживший {i}")
+                except Exception as e:
+                    logger.error(f"Ошибка загрузки выжившего {i}: {e}")
 
         # Загружаем охотника
-        if self.hunter is not None and os.path.exists(HUNTER_SAVE_FILE):
+        if self.hunter is not None and os.path.exists("hunter_dqn.pth"):
             try:
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: pickle.load(open(HUNTER_SAVE_FILE, 'rb')))
-
-                if data.get('version', 1) >= 2:
-                    self.hunter.q_table.clear()
-                    self.hunter.q_table.update(data['hunter_q_table'])
-                    logger.info("Загружен охотник!")
-                else:
-                    logger.warning("Старая версия формата охотника, требуется переобучение")
-
+                await loop.run_in_executor(None, self.hunter.dqn_agent.load, "hunter_dqn.pth")
+                logger.info("Загружен охотник!")
             except Exception as e:
                 logger.error(f"Ошибка загрузки охотника: {e}")
 
@@ -262,7 +233,7 @@ class GameController:
             self.hunter.escape_steps = 0
             self.hunter.movement_pattern = []
 
-        self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
+        # Генераторы уже созданы в create_perlin_map
 
     async def update_agents_async(self, generators_fixed):
         """Асинхронное обновление агентов"""
@@ -290,15 +261,24 @@ class GameController:
             await asyncio.gather(*tasks)
 
     async def _update_single_agent_async(self, agent, all_agents, generators_fixed):
-        """Обновление одного агента"""
+        """Обновление одного агента с DQN"""
         if agent.caught or agent.escaped:
             return
 
-        state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed)
-        action = agent.choose_action(state, self.epsilon)
-        reward = await agent.smooth_move_async(action, all_agents, self.generators, self.walls)
-        next_state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed)
-        agent.update_q_value(state, action, reward, next_state)
+        state = await agent.get_state_vector(all_agents, self.generators, self.exits, generators_fixed, self.walls)
+        action = agent.dqn_agent.act(state, training=True)
+        agent.last_action = action
+        
+        reward, done = await agent.smooth_move_async(action, all_agents, self.generators, self.walls)
+        
+        next_state = await agent.get_state_vector(all_agents, self.generators, self.exits, generators_fixed, self.walls)
+        
+        # Сохраняем опыт в replay buffer
+        agent.dqn_agent.remember(state, action, reward, next_state, done)
+        
+        # Обучение на батче (не каждый шаг для оптимизации)
+        if len(agent.dqn_agent.memory) > agent.dqn_agent.batch_size and agent.dqn_agent.training_steps % 4 == 0:
+            agent.dqn_agent.replay()
 
         # Проверка побега - только если агент еще не сбежал
         if not agent.is_hunter and not agent.escaped and generators_fixed == len(self.generators):
@@ -325,7 +305,7 @@ class GameController:
         elif event.key == pygame.K_s:
             await self.save_models_async()
         elif event.key == pygame.K_l:
-            self.episode, self.successful_escapes, self.epsilon = await self.load_models_async()
+            self.episode, self.successful_escapes, _ = await self.load_models_async()
         elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
             self.simulation_speed = min(self.simulation_speed * 2, 10000)
             logger.info(f"Скорость симуляции: {self.simulation_speed:.0f}x")
@@ -399,8 +379,11 @@ class GameController:
         avg_reward = np.mean(self.survivors[0].last_rewards) if self.survivors and self.survivors[0].last_rewards else 0
         hunter_avg = np.mean(self.hunter.last_rewards) if self.hunter is not None and self.hunter.last_rewards else 0
 
+        memory_size = len(self.survivors[0].dqn_agent.memory) if self.survivors else 0
+        epsilon_dqn = self.survivors[0].dqn_agent.epsilon if self.survivors else 0
+        
         stats = [
-            f"Q-Learning - ASYNC OPTIMIZED",
+            f"DQN - Deep Reinforcement Learning",
             f"Эпизод: {self.episode}/{EPISODES}",
             f"Всего побегов: {self.successful_escapes}",
             f"Генераторы: {self.get_generators_fixed()}/{len(self.generators)}",
@@ -409,11 +392,11 @@ class GameController:
             f"Пойманы: {caught_survivors}",
             f"Застрявшие: {stuck_survivors}",
             f"Охотник: {'вкл' if self.hunter is not None else 'выкл'}",
-            f"ε: {self.epsilon:.3f}",
+            f"ε: {epsilon_dqn:.3f}",
             f"Скорость: {speed_display}",
             f"Награда выжившего: {avg_reward:.2f}",
             f"Награда охотника: {hunter_avg:.2f}",
-            f"Q-table размер: {len(self.survivors[0].q_table) if self.survivors else 0}"
+            f"Replay Buffer: {memory_size}"
         ]
 
         for i, text in enumerate(stats):
@@ -470,7 +453,7 @@ class GameController:
     async def run(self):
         """Главный игровой цикл"""
         self.initialize()
-        self.episode, self.successful_escapes, self.epsilon = await self.load_models_async()
+        self.episode, self.successful_escapes, _ = await self.load_models_async()
 
         logger.info(f"Начало обучения с эпизода {self.episode}, предыдущих побед: {self.successful_escapes}")
 
@@ -488,18 +471,7 @@ class GameController:
                     # Проверка завершения эпизода
                     if all(s.escaped or s.caught for s in self.survivors):
                         self.episode += 1
-                        self.epsilon = max(MIN_EPSILON, self.epsilon * EPSILON_DECAY)
-
-                        # Периодическая очистка
-                        if self.episode % PRUNE_EVERY == 0 and self.episode > 0:
-                            logger.info("Очистка Q-table...")
-                            total_pruned = 0
-                            all_agents = self.survivors
-                            if self.hunter is not None:
-                                all_agents = self.survivors + [self.hunter]
-                            for agent in all_agents:
-                                total_pruned += agent.prune_q_table()
-                            logger.info(f"Всего удалено состояний: {total_pruned}")
+                        # Epsilon управляется внутри DQN агентов
 
                         # Периодическое сохранение
                         if self.episode % 50 == 0:
@@ -513,14 +485,14 @@ class GameController:
                             stuck_count = sum(1 for a in self.survivors if a.escape_mode)
                             escaped_count = sum(1 for a in self.survivors if a.escaped)
                             caught_count = sum(1 for a in self.survivors if a.caught)
-                            q_table_sizes = [len(a.q_table) for a in self.survivors]
+                            memory_sizes = [len(a.dqn_agent.memory) for a in self.survivors]
                             if self.hunter is not None:
-                                q_table_sizes.append(len(self.hunter.q_table))
+                                memory_sizes.append(len(self.hunter.dqn_agent.memory))
 
                             logger.info(
-                                f"Эпизод {self.episode}, ε={self.epsilon:.3f}, Всего побед: {self.successful_escapes}, "
+                                f"Эпизод {self.episode}, ε={self.survivors[0].dqn_agent.epsilon:.3f}, Всего побед: {self.successful_escapes}, "
                                 f"Сбежали: {escaped_count}, Пойманы: {caught_count}, "
-                                f"Застрявших: {stuck_count}, Q-table размеры: {q_table_sizes}")
+                                f"Застрявших: {stuck_count}, Replay Buffer размеры: {memory_sizes}")
 
                         await self.reset_episode_async()
                         break
