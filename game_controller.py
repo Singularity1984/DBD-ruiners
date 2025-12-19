@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import random
 from config import *
-from environment import EnvironmentGenerator
+from environment import EnvironmentGenerator, Generator
 from agents import AsyncAgent
 from renderer import Renderer
 
@@ -28,10 +28,16 @@ class GameController:
         self.survivors = []
         self.hunter = None
         self.generators = []
+        self.training_layout = None
 
-        self.episode = 0
+        self.episode = 1
         self.successful_escapes = 0
         self.epsilon = 1.0
+
+        # Статистика обучения для определения уровня навыка
+        self.episode_history = []  # История эпизодов (результаты последних N эпизодов)
+        self.escape_rate_history = []  # История процента побегов
+        self.avg_episode_reward_history = []  # История средней награды за эпизод
 
         self.running = True
         self.paused = False
@@ -49,10 +55,25 @@ class GameController:
         self.title_font = pygame.font.SysFont('arial', 24, bold=True)
 
         # Создание игрового мира
-        self.walls = EnvironmentGenerator.create_random_walls()
-        self.exits = EnvironmentGenerator.create_random_exits(None, self.walls)
-        self.survivors, self.hunter = self._create_agents(self.walls)
-        self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
+        if USE_TRAINING_ROOM:
+            self.training_layout = EnvironmentGenerator.create_training_room()
+            self.walls = self.training_layout["walls"]
+            self.exits = self.training_layout["exits"]
+            # Используем список генераторов из training_layout
+            self.generators = self.training_layout["generators"]
+            self.survivors = [
+                AsyncAgent(pos[0], pos[1], SURVIVOR_COLOR, False, idx)
+                for idx, pos in enumerate(self.training_layout["survivors"])
+            ]
+            self.hunter = AsyncAgent(self.training_layout["hunter"][0],
+                                     self.training_layout["hunter"][1],
+                                     HUNTER_COLOR, True)
+        else:
+            # Генерируем карту через Perlin noise
+            self.walls = EnvironmentGenerator.create_perlin_walls(seed=None)
+            self.exits = EnvironmentGenerator.create_random_exits(None, self.walls)
+            self.survivors, self.hunter = self._create_agents(self.walls)
+            self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
 
         logger.info("Игра инициализирована")
 
@@ -98,9 +119,44 @@ class GameController:
 
         return survivors, hunter
 
-    async def save_models_async(self):
-        """Асинхронное сохранение моделей"""
+    def get_skill_level(self, agent_type="survivor"):
+        """Определение уровня навыка на основе статистики"""
+        if self.episode < SKILL_EVALUATION_WINDOW:
+            return "novice"
+        
+        # Вычисляем метрики за последние N эпизодов
+        recent_escapes = sum(1 for ep in self.episode_history[-SKILL_EVALUATION_WINDOW:] if ep.get('escaped_count', 0) > 0)
+        escape_rate = recent_escapes / min(SKILL_EVALUATION_WINDOW, len(self.episode_history))
+        avg_reward = np.mean(self.avg_episode_reward_history[-SKILL_EVALUATION_WINDOW:]) if self.avg_episode_reward_history else 0
+        
+        # Определяем уровень на основе эпизодов и метрик
+        if self.episode >= 5000:
+            return "master"
+        elif self.episode >= 2000:
+            if escape_rate > 0.5 or avg_reward > 50:
+                return "master"
+            return "advanced"
+        elif self.episode >= 500:
+            if escape_rate > 0.3 or avg_reward > 30:
+                return "advanced"
+            return "intermediate"
+        else:
+            return "novice"
+
+    async def save_models_async(self, custom_suffix=None):
+        """Асинхронное сохранение моделей с возможностью сохранения по уровню"""
         try:
+            skill_level = self.get_skill_level()
+            level_name = SKILL_LEVELS[skill_level]["name"]
+            
+            # Определяем имя файла
+            if custom_suffix:
+                survivors_file = f"dbd_survivors_{custom_suffix}.pkl"
+                hunter_file = f"dbd_hunter_{custom_suffix}.pkl"
+            else:
+                survivors_file = SURVIVORS_SAVE_FILE
+                hunter_file = HUNTER_SAVE_FILE
+
             # Сохраняем выживших
             survivors_data = []
             for agent in self.survivors:
@@ -109,17 +165,30 @@ class GameController:
                     q_data[key] = value
                 survivors_data.append(q_data)
 
+            # Вычисляем статистику
+            recent_escape_rate = 0
+            recent_avg_reward = 0
+            if len(self.episode_history) > 0:
+                recent_escapes = sum(1 for ep in self.episode_history[-SKILL_EVALUATION_WINDOW:] if ep.get('escaped_count', 0) > 0)
+                recent_escape_rate = recent_escapes / min(SKILL_EVALUATION_WINDOW, len(self.episode_history))
+                recent_avg_reward = np.mean(self.avg_episode_reward_history[-SKILL_EVALUATION_WINDOW:]) if self.avg_episode_reward_history else 0
+
             data_survivors = {
                 'survivors_q_tables': survivors_data,
                 'episode': self.episode,
                 'successful_escapes': self.successful_escapes,
                 'epsilon': self.epsilon,
+                'skill_level': skill_level,
+                'skill_level_name': level_name,
+                'escape_rate': recent_escape_rate,
+                'avg_reward': recent_avg_reward,
+                'episode_history': self.episode_history[-SKILL_EVALUATION_WINDOW:],  # Сохраняем последние N эпизодов
                 'timestamp': time.time(),
-                'version': 2
+                'version': 3  # Обновляем версию
             }
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: pickle.dump(data_survivors, open(SURVIVORS_SAVE_FILE, 'wb'),
+            await loop.run_in_executor(None, lambda: pickle.dump(data_survivors, open(survivors_file, 'wb'),
                                                                  protocol=pickle.HIGHEST_PROTOCOL))
 
             # Сохраняем охотника
@@ -128,37 +197,54 @@ class GameController:
                 for key, value in self.hunter.q_table.items():
                     hunter_data[key] = value
 
+                hunter_skill_level = self.get_skill_level("hunter")
+                hunter_level_name = SKILL_LEVELS[hunter_skill_level]["name"]
+
                 data_hunter = {
                     'hunter_q_table': hunter_data,
                     'episode': self.episode,
+                    'skill_level': hunter_skill_level,
+                    'skill_level_name': hunter_level_name,
                     'timestamp': time.time(),
-                    'version': 2
+                    'version': 3
                 }
 
-                await loop.run_in_executor(None, lambda: pickle.dump(data_hunter, open(HUNTER_SAVE_FILE, 'wb'),
+                await loop.run_in_executor(None, lambda: pickle.dump(data_hunter, open(hunter_file, 'wb'),
                                                                      protocol=pickle.HIGHEST_PROTOCOL))
 
-            file_size_survivors = os.path.getsize(SURVIVORS_SAVE_FILE) // 1024
-            file_size_hunter = os.path.getsize(HUNTER_SAVE_FILE) // 1024 if self.hunter is not None and os.path.exists(
-                HUNTER_SAVE_FILE) else 0
+            file_size_survivors = os.path.getsize(survivors_file) // 1024 if os.path.exists(survivors_file) else 0
+            file_size_hunter = os.path.getsize(hunter_file) // 1024 if self.hunter is not None and os.path.exists(
+                hunter_file) else 0
 
             logger.info(
-                f"Сохранено! Эпизод: {self.episode}, Побеги: {self.successful_escapes}, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
+                f"Сохранено! Эпизод: {self.episode}, Уровень: {level_name}, Побеги: {self.successful_escapes}, "
+                f"Процент побегов: {recent_escape_rate*100:.1f}%, Выжившие: {file_size_survivors}КБ, Охотник: {file_size_hunter}КБ")
 
         except Exception as e:
             logger.error(f"Ошибка сохранения: {e}")
 
-    async def load_models_async(self):
-        """Асинхронная загрузка моделей"""
-        loaded_episode = 0
+    async def load_models_async(self, skill_level=None, custom_file=None):
+        """Асинхронная загрузка моделей с возможностью загрузки по уровню навыка"""
+        loaded_episode = 1  # Начальный эпизод - 1
         loaded_escapes = 0
         loaded_epsilon = 1.0
 
+        # Определяем файлы для загрузки
+        if custom_file:
+            survivors_file = custom_file.replace("hunter", "survivors")
+            hunter_file = custom_file.replace("survivors", "hunter")
+        elif skill_level:
+            survivors_file = f"dbd_survivors_{skill_level}.pkl"
+            hunter_file = f"dbd_hunter_{skill_level}.pkl"
+        else:
+            survivors_file = SURVIVORS_SAVE_FILE
+            hunter_file = HUNTER_SAVE_FILE
+
         # Загружаем выживших
-        if os.path.exists(SURVIVORS_SAVE_FILE):
+        if os.path.exists(survivors_file):
             try:
                 loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: pickle.load(open(SURVIVORS_SAVE_FILE, 'rb')))
+                data = await loop.run_in_executor(None, lambda: pickle.load(open(survivors_file, 'rb')))
 
                 if data.get('version', 1) >= 2:
                     for i, agent in enumerate(self.survivors):
@@ -168,9 +254,24 @@ class GameController:
 
                     loaded_episode = data['episode']
                     loaded_escapes = data['successful_escapes']
-                    loaded_epsilon = data['epsilon']
+                    loaded_epsilon = data.get('epsilon', 1.0)
+                    
+                    # Загружаем историю если есть
+                    if data.get('version', 1) >= 3:
+                        self.episode_history = data.get('episode_history', [])
+                        if 'escape_rate' in data:
+                            self.escape_rate_history.append(data['escape_rate'])
+                        if 'avg_reward' in data:
+                            self.avg_episode_reward_history.append(data['avg_reward'])
+                    
+                    skill_info = ""
+                    if data.get('version', 1) >= 3:
+                        skill_level_loaded = data.get('skill_level', 'unknown')
+                        skill_name = data.get('skill_level_name', 'Неизвестно')
+                        skill_info = f", Уровень: {skill_name} ({skill_level_loaded})"
+                    
                     logger.info(
-                        f"Загружены выжившие! Эпизод: {loaded_episode}, Побеги: {loaded_escapes}, ε: {loaded_epsilon:.3f}")
+                        f"Загружены выжившие! Эпизод: {loaded_episode}, Побеги: {loaded_escapes}, ε: {loaded_epsilon:.3f}{skill_info}")
                 else:
                     logger.warning("Старая версия формата выживших, требуется переобучение")
 
@@ -178,15 +279,22 @@ class GameController:
                 logger.error(f"Ошибка загрузки выживших: {e}")
 
         # Загружаем охотника
-        if self.hunter is not None and os.path.exists(HUNTER_SAVE_FILE):
+        if self.hunter is not None and os.path.exists(hunter_file):
             try:
                 loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, lambda: pickle.load(open(HUNTER_SAVE_FILE, 'rb')))
+                data = await loop.run_in_executor(None, lambda: pickle.load(open(hunter_file, 'rb')))
 
                 if data.get('version', 1) >= 2:
                     self.hunter.q_table.clear()
                     self.hunter.q_table.update(data['hunter_q_table'])
-                    logger.info("Загружен охотник!")
+                    
+                    skill_info = ""
+                    if data.get('version', 1) >= 3:
+                        skill_level_loaded = data.get('skill_level', 'unknown')
+                        skill_name = data.get('skill_level_name', 'Неизвестно')
+                        skill_info = f", Уровень: {skill_name} ({skill_level_loaded})"
+                    
+                    logger.info(f"Загружен охотник!{skill_info}")
                 else:
                     logger.warning("Старая версия формата охотника, требуется переобучение")
 
@@ -201,6 +309,57 @@ class GameController:
         escaped_this_episode = sum(1 for s in self.survivors if s.escaped)
         if escaped_this_episode > 0:
             logger.info(f"В эпизоде {self.episode} сбежало: {escaped_this_episode} выживших")
+
+        # Фиксированная тренировочная комната
+        if USE_TRAINING_ROOM and self.training_layout:
+            for i, survivor in enumerate(self.survivors):
+                start_pos = self.training_layout["survivors"][i % len(self.training_layout["survivors"])]
+                survivor.x, survivor.y = start_pos
+                survivor.caught = False
+                survivor.escaped = False
+                survivor.fixing_generator = False
+                survivor.cooldown = 0
+                survivor.capture_target = None
+                survivor.hold_steps = 0
+                survivor.last_distance_to_target = float('inf')
+                survivor.position_history = []
+                survivor.stuck_counter = 0
+                survivor.consecutive_wall_hits = 0
+                survivor.escape_mode = False
+                survivor.escape_steps = 0
+                survivor.movement_pattern = []
+                survivor.cookies = 0
+
+            if self.hunter is not None:
+                self.hunter.x, self.hunter.y = self.training_layout["hunter"]
+                self.hunter.caught = False
+                self.hunter.escaped = False
+                self.hunter.cooldown = 0
+                self.hunter.capture_target = None
+                self.hunter.hold_steps = 0
+                self.hunter.last_distance_to_target = float('inf')
+                self.hunter.position_history = []
+                self.hunter.stuck_counter = 0
+                self.hunter.consecutive_wall_hits = 0
+                self.hunter.escape_mode = False
+                self.hunter.escape_steps = 0
+                self.hunter.movement_pattern = []
+                self.hunter.cookies = 0
+
+            # Используем список генераторов из training_layout
+            self.generators = self.training_layout["generators"]
+            # Сбрасываем все генераторы в начальное состояние
+            for gen in self.generators:
+                gen.progress = 0
+                gen.fixed = False
+            return
+
+        # Генерация новой карты через Perlin noise каждый эпизод
+        # Используем номер эпизода как seed для разнообразия, но гарантируем уникальность
+        seed = (self.episode * 7919 + 104729) % 2147483647  # Простое число для разнообразия
+        self.walls = EnvironmentGenerator.create_perlin_walls(seed=seed)
+        self.exits = EnvironmentGenerator.create_random_exits(None, self.walls)
+        self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
 
         for survivor in self.survivors:
             attempts = 0
@@ -233,6 +392,7 @@ class GameController:
                     survivor.escape_mode = False
                     survivor.escape_steps = 0
                     survivor.movement_pattern = []
+                    survivor.cookies = 0
                     break
                 attempts += 1
 
@@ -261,8 +421,9 @@ class GameController:
             self.hunter.escape_mode = False
             self.hunter.escape_steps = 0
             self.hunter.movement_pattern = []
+            self.hunter.cookies = 0
 
-        self.generators = EnvironmentGenerator.create_random_generators(None, 150, self.walls)
+        # Генераторы уже созданы выше вместе с картой
 
     async def update_agents_async(self, generators_fixed):
         """Асинхронное обновление агентов"""
@@ -294,10 +455,17 @@ class GameController:
         if agent.caught or agent.escaped:
             return
 
-        state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed)
-        action = agent.choose_action(state, self.epsilon)
+        state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed, self.walls)
+        
+        # Вычисляем процент побегов для adaptive epsilon
+        recent_escape_rate = 0
+        if len(self.episode_history) > 0:
+            recent_escapes = sum(1 for ep in self.episode_history[-SKILL_EVALUATION_WINDOW:] if ep.get('escaped_count', 0) > 0)
+            recent_escape_rate = recent_escapes / min(SKILL_EVALUATION_WINDOW, len(self.episode_history))
+        
+        action = agent.choose_action(state, self.epsilon, self.episode, recent_escape_rate)
         reward = await agent.smooth_move_async(action, all_agents, self.generators, self.walls)
-        next_state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed)
+        next_state = await agent.get_optimized_state_async(all_agents, self.generators, self.exits, generators_fixed, self.walls)
         agent.update_q_value(state, action, reward, next_state)
 
         # Проверка побега - только если агент еще не сбежал
@@ -390,6 +558,7 @@ class GameController:
         stuck_survivors = sum(1 for s in self.survivors if s.escape_mode)
         escaped_survivors = sum(1 for s in self.survivors if s.escaped)
         caught_survivors = sum(1 for s in self.survivors if s.caught)
+        hunter_cookies = self.hunter.cookies if self.hunter is not None else 0
 
         if self.simulation_speed >= 1:
             speed_display = f"{self.simulation_speed:.0f}x"
@@ -399,9 +568,21 @@ class GameController:
         avg_reward = np.mean(self.survivors[0].last_rewards) if self.survivors and self.survivors[0].last_rewards else 0
         hunter_avg = np.mean(self.hunter.last_rewards) if self.hunter is not None and self.hunter.last_rewards else 0
 
+        # Определяем уровень навыка
+        skill_level = self.get_skill_level()
+        skill_name = SKILL_LEVELS[skill_level]["name"]
+        
+        # Вычисляем процент побегов за последние N эпизодов
+        recent_escape_rate = 0
+        if len(self.episode_history) > 0:
+            recent_escapes = sum(1 for ep in self.episode_history[-SKILL_EVALUATION_WINDOW:] if ep.get('escaped_count', 0) > 0)
+            recent_escape_rate = recent_escapes / min(SKILL_EVALUATION_WINDOW, len(self.episode_history))
+        
         stats = [
             f"Q-Learning - ASYNC OPTIMIZED",
             f"Эпизод: {self.episode}/{EPISODES}",
+            f"Уровень навыка: {skill_name} ({skill_level})",
+            f"Процент побегов (100 эп.): {recent_escape_rate*100:.1f}%",
             f"Всего побегов: {self.successful_escapes}",
             f"Генераторы: {self.get_generators_fixed()}/{len(self.generators)}",
             f"Активные: {active_survivors}/{len(self.survivors)}",
@@ -413,8 +594,13 @@ class GameController:
             f"Скорость: {speed_display}",
             f"Награда выжившего: {avg_reward:.2f}",
             f"Награда охотника: {hunter_avg:.2f}",
+            f"Печеньки маньяка: {hunter_cookies}",
             f"Q-table размер: {len(self.survivors[0].q_table) if self.survivors else 0}"
         ]
+
+        # Добавляем строки по каждому выжившему
+        for survivor in self.survivors:
+            stats.append(f"Печеньки выживший {survivor.agent_id}: {survivor.cookies:.1f}")
 
         for i, text in enumerate(stats):
             text_color = TEXT_COLOR
@@ -470,11 +656,17 @@ class GameController:
     async def run(self):
         """Главный игровой цикл"""
         self.initialize()
-        self.episode, self.successful_escapes, self.epsilon = await self.load_models_async()
+        # Загружаем модели только если включено в настройках, иначе начинаем с 1
+        if LOAD_ON_START:
+            self.episode, self.successful_escapes, self.epsilon = await self.load_models_async()
+        else:
+            self.episode = 1
+            self.successful_escapes = 0
+            self.epsilon = 1.0
 
         logger.info(f"Начало обучения с эпизода {self.episode}, предыдущих побед: {self.successful_escapes}")
 
-        while self.running and self.episode < EPISODES:
+        while self.running and self.episode <= EPISODES:
             await self.handle_events()  # Теперь асинхронный вызов
 
             if not self.paused:
@@ -487,11 +679,56 @@ class GameController:
 
                     # Проверка завершения эпизода
                     if all(s.escaped or s.caught for s in self.survivors):
+                        # Experience Replay - переобучение на опыте перед новым эпизодом
+                        if USE_EXPERIENCE_REPLAY and self.episode % REPLAY_UPDATE_FREQUENCY == 0:
+                            for agent in self.survivors:
+                                if hasattr(agent, 'replay_experience'):
+                                    agent.replay_experience()
+                            if self.hunter is not None and hasattr(self.hunter, 'replay_experience'):
+                                self.hunter.replay_experience()
+                        
                         self.episode += 1
-                        self.epsilon = max(MIN_EPSILON, self.epsilon * EPSILON_DECAY)
+                        
+                        # Adaptive epsilon на основе успешности
+                        recent_escape_rate_ep = 0
+                        if len(self.episode_history) > 0:
+                            recent_escapes = sum(1 for ep in self.episode_history[-SKILL_EVALUATION_WINDOW:] if ep.get('escaped_count', 0) > 0)
+                            recent_escape_rate_ep = recent_escapes / min(SKILL_EVALUATION_WINDOW, len(self.episode_history))
+                        
+                        if USE_ADAPTIVE_EPSILON and recent_escape_rate_ep > EPSILON_SUCCESS_THRESHOLD:
+                            # Более агрессивное уменьшение epsilon при хорошей производительности
+                            self.epsilon = max(MIN_EPSILON, self.epsilon * EPSILON_DECAY * EPSILON_SUCCESS_DECAY)
+                        else:
+                            self.epsilon = max(MIN_EPSILON, self.epsilon * EPSILON_DECAY)
+                        
+                        # Записываем статистику эпизода
+                        escaped_count = sum(1 for s in self.survivors if s.escaped)
+                        caught_count = sum(1 for s in self.survivors if s.caught)
+                        avg_reward = np.mean([np.mean(s.last_rewards) if s.last_rewards else 0 for s in self.survivors])
+                        
+                        episode_data = {
+                            'episode': self.episode,
+                            'escaped_count': escaped_count,
+                            'caught_count': caught_count,
+                            'avg_reward': avg_reward,
+                            'epsilon': self.epsilon
+                        }
+                        self.episode_history.append(episode_data)
+                        self.avg_episode_reward_history.append(avg_reward)
+                        
+                        # Ограничиваем размер истории
+                        if len(self.episode_history) > SKILL_EVALUATION_WINDOW * 2:
+                            self.episode_history.pop(0)
+                        if len(self.avg_episode_reward_history) > SKILL_EVALUATION_WINDOW * 2:
+                            self.avg_episode_reward_history.pop(0)
+                        
+                        # Периодическое сохранение по уровню навыка каждые 500 эпизодов
+                        if self.episode % 500 == 0:
+                            skill_level = self.get_skill_level()
+                            await self.save_models_async(custom_suffix=skill_level)
 
                         # Периодическая очистка
-                        if self.episode % PRUNE_EVERY == 0 and self.episode > 0:
+                        if self.episode % PRUNE_EVERY == 0 and self.episode >= 1:
                             logger.info("Очистка Q-table...")
                             total_pruned = 0
                             all_agents = self.survivors
@@ -501,7 +738,7 @@ class GameController:
                                 total_pruned += agent.prune_q_table()
                             logger.info(f"Всего удалено состояний: {total_pruned}")
 
-                        # Периодическое сохранение
+                        # Периодическое сохранение (основное сохранение)
                         if self.episode % 50 == 0:
                             await self.save_models_async()
 
