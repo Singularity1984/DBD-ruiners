@@ -8,8 +8,10 @@ Reinforcement learning environment with asynchronous Q‑learning for survivors 
 
 - **Survivors** repair generators and escape via exits.  
 - **Hunter** captures survivors by holding them within radius.  
-- **Asyncio** enables parallel agent updates for faster training.  
-- **Pygame** visualisation with vision cones, statistics, and controls.
+- **Obstacle Field** – a non‑player environmental agent that periodically places temporary walls in front of survivors, blocking paths and forcing adaptation.  
+- **Asyncio** enables parallel updates for all agents.  
+- **Pygame** visualisation with vision cones, statistics, and controls.  
+- **Procedural maps** – Perlin noise or fixed training room.
 
 ---
 
