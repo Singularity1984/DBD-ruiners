@@ -96,7 +96,6 @@ python main.py
 
 ## Dependencies
 
-- Python 3.8+
 - `pygame`
 - `numpy`
 
