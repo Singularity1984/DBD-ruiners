@@ -1,4 +1,3 @@
-```markdown
 # Dead by Daylight — Q-Learning Simulation
 
 Reinforcement learning environment with asynchronous Q‑learning for survivors and a hunter. Procedural maps, adaptive exploration, experience replay, and skill‑level tracking.
@@ -33,7 +32,6 @@ Reinforcement learning environment with asynchronous Q‑learning for survivors 
 pip install pygame numpy
 python main.py
 ```
-
 ---
 
 ## Controls
